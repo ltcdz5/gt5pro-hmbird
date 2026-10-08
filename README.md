@@ -29,11 +29,48 @@
 
 详见 [`docs/方法.md`](docs/方法.md)。
 
+---
+
+## 借鉴、引用与致谢
+
+本项目的结论**建立在下列公开工作之上**。它们**没有明确的开放许可证**，因此本仓库**只做引用、借鉴与致谢，不包含其代码**；有明确许可证的，按其许可证执行。
+
+### 一、基准（不随仓库分发）
+- **出厂内核本体与其 BTF**：本项目所有"逐字段 / 逐指令 / 逐 CRC"对齐的**唯一基准**。
+
+### 二、官方公开源码（内核本体为 GPL-2.0）
+- **OPPO**：`oppo-source`（含 `android_kernel_common_oppo_sm8650`）
+- **realme**：`realme-kernel-opensource`（GT5 Pro / GT5 / GT6 各代 drop）
+- **OnePlus**：`OnePlusOSS`（`android_kernel_common_oneplus_sm8650`）
+
+> 已核实：这些公开 drop 中**不含** hmbird 实现。
+
+### 三、社区来源（**仅引用与致谢，未包含代码**）
+
+| 来源 | 借鉴了什么 | 许可证状态 |
+|---|---|---|
+| **ferstar** — `realme_GT5pro-AndroidV-common-source` / `-vendor-source` / `kernel_manifest` | GT5 Pro 源码镜像、**`scx` 分支**（OGKI 形态的内核侧实现，作为对齐参照）| 未标注 / 无 |
+| **reigadegr** — `sun_action` | **6.1 sched_ext 补丁**（`6.1sched_ext.diff`，作为缺失文件与调用点的参照）| 无 |
+| **reigadegr** — `hmbird_controller` | **风驰节点（knob）清单**与开关名 `scx_enable` 的用法 | 无 |
+| **WildKernels** — `kernel_patches` | `oneplus/hmbird/*.patch`（A15 = 6.1 的 hmbird 补丁思路）| 无 |
+| **wanwei1028** — `oneplus_hmbird_fix` | **DT `version_type` 兼容层**的思路与降级写法 | 无 |
+| **murongruyan** — `cezai-hmbird-ko` | **风驰 DTBO 模块**：SoC → HMBIRD 类型对照表（SM8650 = `HMBIRD_OGKI`）| **GPL-3.0** |
+| **mcLYX** — `RMX3888_KN_kernel_manifest` | GT5 Pro 的**构建清单**（`build_v.sh`：`APPLY_SCX=y` 切 `scx` 分支）| 无 |
+| **Numbersf** — `Action-Build` | 一加系内核 Action 构建工程（`patches/hmbird_patch.patch` 的 DT 改写思路）| 未标注 |
+| **TheVoyager0777** — `Platform_Phantom` | 仅作对照（其 14 个 `.ko` 经 ABI 校验判定**不可用**，未采用其任何二进制）| **GPL-2.0** |
+
+**郑重感谢以上作者与组织的公开工作。** 若其中任一作者认为本项目的引用或表述不妥，请联系，我会立即调整或移除。
+
+### 四、我们自己的部分
+接口 hub 的设计、逐条对齐与审计方法、CRC 定点核对方法、三道闸门工具，以及全部过程记录。
+
+---
+
 ## 本仓库不包含什么（重要）
 
-- **不包含**来自**无明确许可证**来源的代码（仅作引用与致谢）：`ferstar/*`、`reigadegr/*`、`WildKernels/*`、`wanwei1028/*`、`mcLYX/*`；
+- **不包含**来自**无明确许可证**来源的代码（仅引用与致谢，见上）；
 - **不包含**任何厂商二进制（`.ko` / `Image.stock` 等）；
-- 详见 [`docs/来源与致谢.md`](docs/来源与致谢.md)。
+- 详细来源清单见 [`docs/来源与致谢.md`](docs/来源与致谢.md)。
 
 ## 许可
 
