@@ -26,7 +26,7 @@ cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
 
 ## 一键方案：fengchi-boot 附加模块
 
-3 个文件、约 2 KB，装卸简单：
+作者：ltcdz5（酷安同名）。**需搭配本自编内核使用**。3 个文件、约 2 KB，装卸简单：
 ```
 module.prop       模块描述
 service.sh        开机：官调属性 + HAL 服务 → 按依赖序加载厂商栈 → MGLRU → 起守护
