@@ -59,6 +59,23 @@ cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
 | 全自动链路 | ✅ 开机自愈 + 游戏触发切换（实测生效）|
 | 内核开关强开（`scx_enable=1`）| ✗ **硬挂死**（不要用）|
 
+
+## 一键方案：`fengchi-boot` 附加模块（v1.3）
+
+3 文件 / 约 2.3 KB，装卸简单：
+
+~~~
+module.prop      v1.3
+service.sh       开机：官调属性 + HAL 服务 → 按依赖序 insmod 三件套（注册 scx）→ MGLRU → 起守护
+fengchi-gov.sh   守护：有游戏 ⇒ scx；无游戏 ⇒ uag（官方默认）
+~~~
+
+它覆盖了原来需要的两个小模块：
+- `lru_gen_on`（MGLRU 两个节点）⇒ **已并入 ⇒ 可删**
+- `horae_once`（`persist.sys.horae.enable=1` + `start horae`）⇒ **已并入 ⇒ 可删**
+
+与风驰无关的模块按需保留：`extreme_gt`（只去锁帧/温控，不动调度 ✓）、`quiet_logs`（压日志刷屏 ✓）。
+
 ## 方法（简述）
 
 1. 以**出厂内核**为基准：符号、CRC、结构体布局逐条比对（BTF 逐字段对偏移）；
