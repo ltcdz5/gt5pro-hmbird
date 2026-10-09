@@ -18,7 +18,7 @@ cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
 
 | 段 | 做什么 | 谁负责 |
 |---|---|---|
-| 一、内核 | 提供风驰调速器所需的接口与 ABI 兼容（导出集逐名不变、厂商模块不受影响）| 本项目自编内核 |
+| 一、内核 | 提供风驰调速器所需的接口与 ABI 兼容（导出集逐名不变、厂商模块不受影响）| github@ltcdz5 自编内核 |
 | 二、厂商栈 | 开机按依赖序加载 oplus_bsp_game_opt → oplus_bsp_sched_assist → oplus_bsp_sched_ext（最后者注册 scx 调速器）| fengchi-boot 附加模块 |
 | 三、触发 | 检测厂商是否识别到游戏：有游戏 ⇒ scx；无游戏 ⇒ 系统默认 | fengchi-boot 的守护脚本 |
 
@@ -26,7 +26,7 @@ cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
 
 ## 一键方案：fengchi-boot 附加模块
 
-作者：ltcdz5（酷安同名）。**需搭配本自编内核使用**。3 个文件、约 2 KB，装卸简单：
+作者：**github@ltcdz5**（酷安同名）。**需搭配本自编内核使用**。3 个文件、约 2 KB，装卸简单：
 ```
 module.prop       模块描述
 service.sh        开机：官调属性 + HAL 服务 → 按依赖序加载厂商栈 → MGLRU → 起守护
