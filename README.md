@@ -4,7 +4,7 @@
 
 > 作者：**github@ltcdz5** ／ **酷安@天玑1100逆天功耗** ｜ 由 DeepSeek 协助整理
 
-## 目前做到哪一步（2026-10-11 更新）
+## 目前做到哪一步（2026-10-12 更新）
 
 > 这一节是本仓库**唯一**的进度口径；下面「怎么用」那几节仍然有效，但请先读这里。
 
@@ -20,25 +20,56 @@
 
 指 `/proc/hmbird_sched/scx_enable=1` 那条路（把任务真正切进内核里的 hmbird 调度类）。
 
-- **现象**：启用后 `running` 从 1 涨到 20~40，任务被压在 **CPU0/1/2**（大核与超大核空闲），
-  约 60 秒后 hmbird 自检到任务饿死（`failed to run for ~58s`）并**自动禁用自己**，系统随后恢复。
-  全程 **无 panic、无 WALT-BUG、无 PSI 不一致**。
-- **2026-10-11 凌晨做了一轮系统二分，以下已被排除**（每条都有现场证据）：
-  partial 簇 / rescue / partial util 采样 · `scx_gov` 调速器 · 野指针写 ·
-  两份 `slim_walt_ctrl` 状态不一致 · `hmbird_ops` ABI 错位 · 内核侧 irq_work 全 rq 锁 ·
-  「WALT 与 hmbird 两套全速跑」
-- **根因仍未定位。** 目前的判断是：问题更可能出在**我们这套调度类的放置策略**上，
-  而不是「hmbird 一开就坏」。
+**两类现象，别混在一起：**
 
-### 🔭 下一步方向（评估中，尚未动手）
+1. **饿死**（稳定可复现）：启用后 `running` 从 1 涨到 20~40，任务被压在 **CPU0/1/2**（大核与超大核空闲），
+   约 60 秒后 hmbird 自检到任务饿死（`failed to run for ~58s`）并**自动禁用自己**，系统随后恢复。
+   全程 **无 panic、无 WALT-BUG、无 PSI 不一致**。
+2. **整机冻结复位**（偶发）：在**启用 62 秒后写 `scx_enable=0` 关闭**的瞬间，整机瞬时冻结并硬复位，
+   **零内核日志**（连无关的充电刷屏日志都同时停止）。256 MB 完整 DDR 转储里
+   `list_add double add` / `__list_add_valid` / `WALT-BUG` / `Oops` / `BUG:` / `panic` **全部为 0**。
 
-改走上游官方 **sched_ext（BPF struct_ops 调度器）** 路线：
+**2026-10-12 新增的关键发现：看门狗 60 秒窗口**
 
-- 内核**本来就支持**：`CONFIG_SCHED_CLASS_EXT=y`、`BPF_SYSCALL/JIT=y`、`DEBUG_INFO_BTF=y`，
-  设备 `/sys/kernel/sched_ext/` 存在且 `enabled=0`（**这个入口从未被启用过**）
-- 这条路**不依赖 WALT 帧率感知 util**（那正是当前这套的核心问题来源）
-- 首个实验（E1）：写一个最小 BPF 调度器，验证官方路径能否在本机跑起来；
-  跑不起来就回到继续修内核态 hmbird
+- `kernel/sched/hmbird/hmbird.c:64-70`：`HMBIRD_WATCHDOG_MAX_TIMEOUT = 120 * HZ`
+- 启用路径 `:4579-4584`：`queue_delayed_work(…, hmbird_watchdog_timeout / 2)` ⇒ **首次触发 = enable 后恰好 60 秒**
+- 关闭路径 `:4326`：`cancel_delayed_work_sync(&hmbird_watchdog_work)`
+- 实测对照：**每轮启用 62 秒**的实验（t157）在第 2 轮冻结；**每轮启用 10 秒**（t158，20 轮）与
+  **30 秒**（t159，关闭后观察 15 分钟）全部通过 —— 但它们**没有跨过 60 秒窗口**，
+  所以「全过」**不构成关闭路径安全的证据**。
+- 已划掉一个嫌疑：设备实测 `/proc/hmbird_sched/watchdog_enable = 0`，
+  看门狗的 stall 上报链（`check_rq_for_timeouts` → `hmbird_err_exit_workfn`）**不会触发**。
+
+**已被排除**（每条都有现场证据）：partial 簇 / rescue / partial util 采样 · `scx_gov` 调速器 · 野指针写 ·
+两份 `slim_walt_ctrl` 状态不一致 · `hmbird_ops` ABI 错位 · 内核侧 irq_work 全 rq 锁 ·
+「WALT 与 hmbird 两套全速跑」· 关闭路径的 `list_add double add`（Stage BS/BQ 三件套已修，20 轮验证）·
+00:55:41 那次重启（是 `system_server` 用户态主动 reboot，与 hmbird 无关）
+
+**根因仍未定位。** 目前的判断是：问题更可能出在**我们这套调度类的放置策略**上，而不是「hmbird 一开就坏」。
+
+### 🔭 下一步方向（已修正）
+
+⚠️ **不再走上游官方 sched_ext（BPF struct_ops）路线。** 2026-10-11 之前的评估曾把它列为方向，
+但更早的实测已经否决：`bpftool struct_ops register` 一加载就硬挂死整机（2026-10-03），
+`opt43` 的「部分模式」同样硬挂。该路线的失败面（`ext.c` 的 `cpus_read_lock` 持锁窗口）
+至今没有解法。
+
+现在的方向是 **继续修内核态 hmbird 调度类**，重点是：
+
+1. **看门狗窗口**：跑启用 ≥70 秒的对照实验，判定 60 秒点是否是触发条件（4 条可证伪判据见下）。
+2. **放置策略**：`select_cpu` 的亲和性守卫（Stage BL）只守一个入口，`sticky_cpu` / `critical_affinity` /
+   migrate 路径可以绕过；`hmbird_pick_idle_cpu` 传的是 `cpu_possible_mask` 而非 `p->cpus_ptr`。
+3. **关闭路径加固**：给 `kernel/sched/fair.c:12442`（`set_next_task_fair` 的 `list_move`）补类守卫，
+   给 `hmbird_sched_class` 补 `.switched_from` 摘 `group_node`。
+
+**可证伪判据（下一轮）**
+
+| 编号 | 判据 |
+|---|---|
+| W1 | 启用 ≥70 s × ≥5 轮，崩溃率显著高于 10 s 组 |
+| W2 | 每使能秒崩溃率在 10/20/30/45/60 s 梯度上近似恒定（线性模型）|
+| W3 | 关闭路径崩溃前 dmesg 有 `watchdog failed to check in for` |
+| W4 | 把 `timeout/2` 改成 `timeout*4` 后 70 s 组不再崩 |
 
 ### ⚠️ 一条必须说清楚的区分
 
