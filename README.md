@@ -4,78 +4,77 @@
 
 > 作者：**github@ltcdz5** ／ **酷安@天玑1100逆天功耗** ｜ 由 DeepSeek 协助整理
 
-## 目前做到哪一步（2026-10-12 更新）
+## 目前做到哪一步（2026-10-13 更新）
 
 > 这一节是本仓库**唯一**的进度口径；下面「怎么用」那几节仍然有效，但请先读这里。
 
-### ✅ 已经能用的：风驰游戏切换（本仓库主线）
+### ✅ 第一条（本仓库主线）：风驰游戏切换
 
-`opt60` 内核 + `fengchi-boot` 模块 —— 进游戏自动切到厂商的 `scx` 调速器、退出回系统默认 `uag`。
+`opt60` 起的自编内核 + `fengchi-boot` 模块 —— 进游戏自动切到厂商的 `scx` 调速器、退出回系统默认 `uag`。
 
 - 实测：**第五人格、绝区零** 均正确切换；重负载稳定；`Oops / BUG / panic = 0`
-- 边界：内核导出集 **15,489** 逐名未变；493 个厂商模块 `missing=0 / crc=0`
-- 回退件：`boot-v1.1-opt60-repacked.img`，md5 `5fd7909866e0de04b8e46cd9b388cc2e`
+- 边界（opt60 基线核对，此后各 opt 未逐一复核 ⇒ **未验证**）：内核导出集 **15,489** 逐名未变；493 个厂商模块 `missing=0 / crc=0`
+- 已知可用的干净回退件：`boot-v1.1-opt60-repacked.img`，md5 `5fd7909866e0de04b8e46cd9b388cc2e`
 
-### ⚠️ 仍在攻克、**当前不可用**的：内核态 hmbird 调度类
+★一条必须记住的架构事实★：`scx` 调速器由**厂商模块** `oplus_bsp_sched_ext.ko` 提供，而设备上**唯一 insmod 它**的就是本仓库守护模块的 `service.sh`（依赖序 `oplus_bsp_game_opt` → `oplus_bsp_sched_assist` → `oplus_bsp_sched_ext`）。
+⇒ **停用守护模块 = 顺手把 `scx` governor 一起删掉**（`scaling_available_governors` 里就没 `scx` 了）。
+
+### ✅ 第二条（2026-10-13 新打通）：内核态 hmbird 调度类
 
 指 `/proc/hmbird_sched/scx_enable=1` 那条路（把任务真正切进内核里的 hmbird 调度类）。
+**状态：从「不可用」变成「能用」** —— 能开、能长时间稳定、能关干净，并且能与厂商 `scx` 调速器**同时在线**。
 
-**两类现象，别混在一起：**
+当前验证内核：`6.1.141-android14-11-o-ltcdz5-v1.1-opt162`
 
-1. **饿死**（稳定可复现）：启用后 `running` 从 1 涨到 20~40，任务被压在 **CPU0/1/2**（大核与超大核空闲），
-   约 60 秒后 hmbird 自检到任务饿死（`failed to run for ~58s`）并**自动禁用自己**，系统随后恢复。
-   全程 **无 panic、无 WALT-BUG、无 PSI 不一致**。
-2. **整机冻结复位**（偶发）：在**启用 62 秒后写 `scx_enable=0` 关闭**的瞬间，整机瞬时冻结并硬复位，
-   **零内核日志**（连无关的充电刷屏日志都同时停止）。256 MB 完整 DDR 转储里
-   `list_add double add` / `__list_add_valid` / `WALT-BUG` / `Oops` / `BUG:` / `panic` **全部为 0**。
+```
+boot-v1.1-opt162-repacked.img   md5 80a9c6251d9012241bb392f21e0a5e38   (201,326,592 B)
+Image.opt162.crc                md5 918c4c8551b632d9a01063282890017b
+```
 
-**2026-10-12 新增的关键发现：看门狗 60 秒窗口**
+**修掉的三个真实缺陷**
 
-- `kernel/sched/hmbird/hmbird.c:64-70`：`HMBIRD_WATCHDOG_MAX_TIMEOUT = 120 * HZ`
-- 启用路径 `:4579-4584`：`queue_delayed_work(…, hmbird_watchdog_timeout / 2)` ⇒ **首次触发 = enable 后恰好 60 秒**
-- 关闭路径 `:4326`：`cancel_delayed_work_sync(&hmbird_watchdog_work)`
-- 实测对照：**每轮启用 62 秒**的实验（t157）在第 2 轮冻结；**每轮启用 10 秒**（t158，20 轮）与
-  **30 秒**（t159，关闭后观察 15 分钟）全部通过 —— 但它们**没有跨过 60 秒窗口**，
-  所以「全过」**不构成关闭路径安全的证据**。
-- 已划掉一个嫌疑：设备实测 `/proc/hmbird_sched/watchdog_enable = 0`，
-  看门狗的 stall 上报链（`check_rq_for_timeouts` → `hmbird_err_exit_workfn`）**不会触发**。
+| # | 缺陷（启用后的现象） | 修在 | 现场判据 |
+|---|---|---|---|
+| 1 | **任务饿死**：`running` 1→20~40、任务全压 CPU0/1/2（大核超大核空闲），约 60 s 后自禁 | `opt159`：T2 簇可见性 —— `gen_cluster_ctx_separate` 给 BIG 的窗口是 `[5,8)`、LITTLE 是 `[8,10)`，**各簇只能扫一半**；只放宽超时兜底路径（`consume_timeout_dsq` 的 `ctx.lower/upper` = 5/10） | t184：8 线程满载 **200 s**、跨过 120 s 看门狗阈值，`stall=0 balance=0 disabled=0`，`runq=10~16`，`boot_id` 未变 |
+| 2 | **`balance_callback` 契约违反** ⇒ `brk #0x800` 硬挂（`__schedule+0x7e8` 那条断言） | `opt158`：我们漏了参照补丁的 `reject_change_to_scx` 过滤 —— enable/disable 两个切类循环各加 `if (reject_change_to_hmbird(p, p->prio)) continue;`（当前树 `hmbird.c:4792` / `:5196`）⇒ **不产生回调**，于是不需要 drain | t183：`balance_cb / ext_ctrl / task_rq_lock / __schedule / stall` **五项全 0**，`boot_id` 未变 |
+| 3 | **每 60 s 周期性强切 governor** ⇒ `scx` 调速器被反复销毁重建（一局 6m41s 重建 6~7 次、间隔均值 61.4 s） | `opt160`：把 watchdog work 里的周期性强切（第二调用点）用 `#if 0` 停掉，**只保留启用前那一次兜底**（当前树 `hmbird.c:5043` 的 `hmbird_gov_switch_away()`） | t190：`t42=0` 全程、`gov=scx` 全程 |
 
-**已被排除**（每条都有现场证据）：partial 簇 / rescue / partial util 采样 · `scx_gov` 调速器 · 野指针写 ·
-两份 `slim_walt_ctrl` 状态不一致 · `hmbird_ops` ABI 错位 · 内核侧 irq_work 全 rq 锁 ·
-「WALT 与 hmbird 两套全速跑」· 关闭路径的 `list_add double add`（Stage BS/BQ 三件套已修，20 轮验证）·
-00:55:41 那次重启（是 `system_server` 用户态主动 reboot，与 hmbird 无关）
+**共存与还原（都是真机实测）**
 
-**根因仍未定位。** 目前的判断是：问题更可能出在**我们这套调度类的放置策略**上，而不是「hmbird 一开就坏」。
+- `opt161b`（t190，4→8 线程共 200 s）：`stall=0 balance=0 disabled=0 warn=0 pc=0 t42=0 veto=0 maxrunq=22 maxload=21.84 gov=scx scx=1`，`boot_id` 未变
+- `opt161b` 上「进入 → 保持 → 退出」整周期（t194，132 s 共存）：退出后 M1~M4 **四项判据全 PASS**，`boot_id` 不变
+- `opt162` 上同一套 enter/exit 脚本：hmbird + scx **同时在线 133.2 s**（uptime 124.42 → 257.64，跨 60 s 看门狗周期两次），M1~M4 全 PASS
+- 退出终态：governor 全 `uag`、`scx_enable=0`、`slim_stats=0`、`boot_id` 不变
 
-### 🔭 下一步方向（已修正）
+**★两条最容易踩的判据口径（务必照做）★**
 
-⚠️ **不再走上游官方 sched_ext（BPF struct_ops）路线。** 2026-10-11 之前的评估曾把它列为方向，
-但更早的实测已经否决：`bpftool struct_ops register` 一加载就硬挂死整机（2026-10-03），
-`opt43` 的「部分模式」同样硬挂。该路线的失败面（`ext.c` 的 `cpus_read_lock` 持锁窗口）
-至今没有解法。
+1. **退出还原必须由用户态显式做**：内核**不会**自动把 governor 写回。正确顺序（先 `uag` → 开 hmbird → 再 `scx`）下 `hmbird_gov_switch_away()` 整块跳过，`hmbird_orig_gov` 从未被写；退出时 `hmbird_gov_restore()` 又因空判据整段跳过 ⇒ 脚本必须自己写 `uag`，且 `echo 0 > scx_enable` 之后**再补写一次**。反过来（顺序被打乱）没有内核兜底：启用时若 governor 已是 `scx`，内核会把 `scx` 记为原值并**当场**写回 `scx` + 清空（该 enable 因 `t42` 联锁被拒，`hmbird.c:5058`）；启用时若 governor 是 `uag`，内核什么都不记录、退出时也不写任何 governor。两种走法的终点都是 governor 残留 `scx`（裸 `scx`），内核不会帮还原 ⇒ 顺序闸门必须**硬断言**，不能只写注释。
+2. **`scx_enable` 是意图值，不是状态**（`hmbird_sched_proc_main.c:285` 先发布意图、`:306-307` 失败不回滚）⇒ `cat` 回 0 **不证明** hmbird 已关。真实态只看 dmesg 的 `scx_enable=%d -> hmbird_ctrl() rc=%d, enabled=%d`（`:299`）或 `/proc/hmbird_sched/hmbird_stats` 里环形 `sw_rec` 的最新一条。
 
-现在的方向是 **继续修内核态 hmbird 调度类**，重点是：
+**还剩下的边界（诚实说）**
 
-1. **看门狗窗口**：跑启用 ≥70 秒的对照实验，判定 60 秒点是否是触发条件（4 条可证伪判据见下）。
-2. **放置策略**：`select_cpu` 的亲和性守卫（Stage BL）只守一个入口，`sticky_cpu` / `critical_affinity` /
-   migrate 路径可以绕过；`hmbird_pick_idle_cpu` 传的是 `cpu_possible_mask` 而非 `p->cpus_ptr`。
-3. **关闭路径加固**：给 `kernel/sched/fair.c:12442`（`set_next_task_fair` 的 `list_move`）补类守卫，
-   给 `hmbird_sched_class` 补 `.switched_from` 摘 `group_node`。
+- `hmbird_partial_util`（opt162 新增旋钮）：默认 `N` 与 `opt161b` 行为一致；置 `Y` 目前只测到**轻载 90 s 无异常**，历史记录（opt142 曾「8 s 内 running 2→22、~61 s 自检 stall 并自禁」）**未复现、也未被判死**（要判死需要一次带 8 线程负载的 Y 臂）。
+- 8 线程负载下 policy7 的 `scaling_cur_freq` 恒 672000，与 `load≈20` 不相称 —— **未判定**是 scx 没把大核拉起来，还是读数口径问题。
+- **真实游戏负载下尚未复测**（t194 全程无游戏）；`16:55 静默硬挂` 是否可复现也**未验证**。
+- 对非游戏应用的调度影响，目前只用四项统计判据（M1~M4）覆盖，**长时日常使用的对比未做**。
 
-**可证伪判据（下一轮）**
+### 🔭 下一步
 
-| 编号 | 判据 |
-|---|---|
-| W1 | 启用 ≥70 s × ≥5 轮，崩溃率显著高于 10 s 组 |
-| W2 | 每使能秒崩溃率在 10/20/30/45/60 s 梯度上近似恒定（线性模型）|
-| W3 | 关闭路径崩溃前 dmesg 有 `watchdog failed to check in for` |
-| W4 | 把 `timeout/2` 改成 `timeout*4` 后 70 s 组不再崩 |
+1. **真实游戏态复测**：把负载从合成自旋线程换成真实游戏，跑一遍「进游戏启用 → 退出完整还原」。
+2. **判据收窄**：`warn` 只数 `WARNING:`，别把 `Call trace:` 算进去 —— 厂商 TEE 每 ~61.4 s 打一条周期栈（`__switch_to` → `__schedule` → `qcom_scm`），与调度无关、任何内核上都有。
+3. **守护模块下一版**：按复核意见修好了 `D4 版本闸门` + `F1 内核自禁盲区`，并有独立复核判定 PASS——**是否发布 / 上机未验证**，不写进本篇进度。
+4. **不再走上游官方 sched_ext（BPF struct_ops）路线**（结论不变）：`bpftool struct_ops register` 一加载就硬挂死整机（2026-10-03），`opt43` 的「部分模式」同样硬挂；该路线的失败面至今没有解法。
 
-### ⚠️ 一条必须说清楚的区分
+### ⚠️ 一条必须说清楚的区分（两条路的关系）
 
-README 下面写的「显示 `scx` = 风驰已生效」，指的是**厂商模块注册的 `scx` 调速器**；
-和上面那条「内核态 hmbird 调度类」是**两条完全不同的路**。
-**前者可用，后者不可用**，请不要把两者的现象混在一起。
+本仓库涉及**两条不同的路**，2026-10-13 起**两者都可用，而且可以同时在线**：
+
+| | 到底是什么 | 怎么看它生效 |
+|---|---|---|
+| 厂商 `scx` 调速器 | 厂商模块 `oplus_bsp_sched_ext.ko` 注册的 **cpufreq governor** | `cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor` 显示 `scx` |
+| 内核态 `hmbird` 调度类 | 我们编进内核的 **`sched_class`**（`DEFINE_SCHED_CLASS(hmbird)`，当前树 `hmbird.c:4373`） | `/proc/hmbird_sched/scx_enable=1` + dmesg 的 `enabled=1` |
+
+下面「怎么确认真的生效」那一节说的是**第一条**（governor）；不要用它的方法去判断第二条。
 
 ## 怎么确认真的生效
 
@@ -85,7 +84,7 @@ README 下面写的「显示 `scx` = 风驰已生效」，指的是**厂商模�
 cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
 ```
 
-显示 `scx` = 风驰已生效 ✓；退出游戏后回到系统默认（本机是 `uag`）✓
+显示 `scx` = 风驰已生效 ✓；退出游戏后回到系统默认（本机是 `uag`）✓（这一步由守护脚本显式完成：内核不会自动写回 governor）
 
 ## 怎么用（三步）
 
