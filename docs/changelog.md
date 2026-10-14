@@ -1,5 +1,60 @@
 # 更新日志（Changes）
 
+## 2026-10-14 · ★P0 判决：核心簇被 hmbird 排除出调度视野★（新增，请优先读这条）
+
+### 一、结论先行
+
+**「内核态 hmbird 调度类可用」这个口径要加一条硬限定**：它**能开、能关、能与厂商 `scx` 共存**，
+但**在线时 cpu5/6/7 被排除出调度视野**，调度质量不成立。
+
+**判决证据（同样 3 个线程，用 `taskset e0`（bit5/6/7）硬绑到 cpu5/6/7）**：
+
+| 条件 | cpu5 / cpu6 / cpu7 | 频率 f5 / f6 / f7 |
+|---|---|---|
+| hmbird **OFF** + gov=uag | **100 / 100 / 100** | 2572800 / 2572800 / 2169600 |
+| hmbird **ON** + gov=scx | **0 / 1 / 0** | 499200 / 499200 / 672000（最低档） |
+
+⇒ CPU 物理、调频、thermal 全部正常（OFF 时三核满频 100%），**问题纯粹是 hmbird 在线时把 cpu5/6/7 从「任务可运行的核」里剔除**，
+**连显式 `sched_setaffinity` 都绕不过去**。
+
+### 二、三个用户态开关全部无效（不要再在它们上面花真机轮次）
+
+| 开关 | 实测 |
+|---|---|
+| `partial_ctrl=1` | hmbird **OFF** 时写 1 保持（`1/1/1`）；hmbird **ON** 时（无论 gov=uag 还是 scx、无论有无 12 线程负载）**立刻被清**（`0/0/0`） |
+| `isolate_ctrl=1` | 同上，写不住 |
+| `iso_free_rescue=1` | **能写住**（读回 1 保持），但 cpu5/6/7 仍 `0/0/0` ⇒ 无效 |
+
+`partial_ctrl` 写不住的机制：它绑的是裸 int `partial_enable`（`kernel/sched/hmbird_sched_proc_main.c:400-403`，
+写处理器 `hmbird_common_write :201-211` 无保护），而 `partial_dynamic_ctrl()`（`kernel/sched/hmbird/hmbird.c:1006-1048`）
+在 `l_under && b_under` 时执行 `set_partial_rescue(false,false,false)`（`:1032-1033`）→ `WRITE_ONCE(partial_enable,false)`（`:620-625`）
+⇒ **用户写进去的值被状态机在下一拍收回**。hmbird OFF 时该函数不被调用，故写得住。
+
+### 三、基线复现（12 个等优先级 spin，gov=scx + `scx_enable=1`）
+
+12 个样本**全部**：
+
+```
+cpu0=100 cpu1=100 cpu2=12~60 cpu3=9~59 cpu4=11~61 cpu5=0 cpu6=0 cpu7=0
+```
+
+### 四、下一步（最高优先级）
+
+源码定位「hmbird 在线时 cpu5/6/7 连 `taskset` 绑核都跑不动」的那一处机制。候选：
+`hmbird.c:1400-1405`（EXCLUSIVE 早退）、`:1420-1434`（iso_free_rescue 出口）、
+`task_only_blongs_to_cluster` 经 `:3273→:1276` 与消费侧共用 `gen_cluster_ctx_separate` 的放置侧路径。
+**要能解释「为什么显式 `sched_setaffinity` 也不能让任务在这些核上运行」。**
+
+> 完整现场：`gt5pro-kernel-lab/2026-10-14/`（阶段 I，含 p3v2 判决脚本与三个探针）；
+> 台账：`gt5pro-kernel-kit/CHANGELOG.md` 第「三十四」章。
+
+### 五、D14 标注
+
+实验期间前台为 `com.deepseek.chat`（机主在用手机）。各臂对照在同污染条件下取得，且 A0 复现与绑核对照均为同 run 内前后对照
+⇒ **方向可信**；绝对数值（cpu2–4 零散占比）可能被用户负载抬高，不作结论依据。
+
+---
+
 ## 2026-10-11 · 进度口径更新：把「两条路」分清
 
 ### 一、结论先行
