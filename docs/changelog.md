@@ -26,27 +26,43 @@
    ★平均 FPS **46.53 不过**（阈值 55）★，JANK 0.332 / cpu5-6 20.7% / cpu7 7.0% / 长帧 0 四项过。
    `f234` 实测 **1631 MHz**（正常 2939~2961），`scaling_max_freq` 被压约 **19%**。
 4. **前一篇 P0 判决未翻案**：三个开关（`partial_ctrl` / `isolate_ctrl` / `iso_free_rescue`）仍写不住或无效。
-5. ★**ABI 实测：`CONFIG_HMBIRD_SCHED_CORE=n` 禁用**★（本想用它把 hmbird `sched_class` 整个摘掉）：
-   相对上机版 `opt168`（导出 15490），CORE=n 后导出 15489，**3 个符号 CRC 改变 + 1 个符号消失**：
+5. ★**`CONFIG_HMBIRD_SCHED_CORE=n` 的真实 ABI 影响：只少 1 个无人引用的导出**★
+   （本条**当日更正过**，初版结论是错的，见下）：
+   相对上机版 `opt168`（导出 15490），CORE=n 后导出 15489 ——
+   **CRC 不同 0 个、新增 0 个、消失 1 个**：
 
-   | 符号 | opt168 (CORE=y) | CORE=n |
+   | 符号 | opt168 | CORE=n |
    |---|---|---|
-   | `iso_masks` | `0xcb6a4c44` | `0x9998675b` |
-   | `sk_filter_trim_cap` | `0xf5845708` | `0x43b2b8f0` |
-   | `task_is_scx` | `0xb3071c68` | `0x61658a4e` |
-   | `hmbird_transitioning` | `0x47330ca1` | ★消失★（定义 `kernel/sched/hmbird/hmbird.c:95-96`） |
+   | `hmbird_transitioning` | `0x47330ca1` | ★消失★（定义 `kernel/sched/hmbird/hmbird.c:95-96`，随 CORE 门控的文件不编译） |
 
-   ⇒ `gate_vko_crc.py`：opt168 **拒载 = 0**；CORE=n **拒载 = 2**（`bluetooth.ko`、`oplus_bsp_sched_ext.ko`），
-   报的是 `disagrees about version of symbol`。机制：全树只有 **2 个**头文件被 CORE 门控
-   （`include/linux/sched.h:2489-2578`、`kernel/sched/sched.h:3409-3411`）⇒ genksyms 可见类型集变化。
+   走完出片链路四道 CRC 门禁后：`gate_vko_crc.py` **拒载 = 0**；
+   `gate_all_modules.py` **493 个模块全绿（缺失=0 CRC不符=0）** ⇒ 没有厂商 `.ko` 引用 `hmbird_transitioning`。
 
-### 三、顺带查出两个坑（后来人必看）
+   > ★**初版错在哪**★：初版报"3 个符号 CRC 被 CORE=n 改坏 ⇒ 两个模块拒载 ⇒ 这条退路禁用"。
+   > 实测那 3 个 CRC（`iso_masks` / `task_is_scx` / `sk_filter_trim_cap`）是**本树 genksyms 的自然值**，
+   > CORE=y 与 CORE=n **算出来完全一样**；`opt168` 上的"好值"是出片链路里**定点覆写**
+   > （`tools/patch_crc_targeted.py`）写进去的。初版出片时**漏跑了那道覆写**，
+   > 于是把"漏跑工序"读成了"CORE 破坏 ABI"。★症状完全一样（3 个 CRC 对不上、两模块拒载、
+   > 构建 rc=0 无任何报错）★ —— 记在这里当反面教材。
 
-1. ★`out-core` 是**脏构建目录**★：`Module.symvers`(10-15 15:35)=好值 `0xcb6a4c44`，
-   而 `vmlinux.symvers`(10-16 13:00)=坏值 `0x9998675b` —— 同目录两个 symvers 互相矛盾
-   ⇒ 混了 CORE=y / CORE=n 两批 `.o`。**opt169/170/171 都建在它上面，产物不可信。**
+6. ★**出片链路备忘（血的教训，见 kit 的《出片链路：四道 CRC 门禁》）**★：
+   `Image.pre`（裸构建）→ `patch_crc_targeted.py` → `Image.crc`（**恰差 12 字节 = 3 个 CRC 槽位**）
+   → 四道门禁全 `exit=0` 才可重打包。**拿 `Image.pre` 直接重打包会得到
+   "构建正常、厂商模块静默拒载"的坏件。** 本轮留档两份裸核以资对照：
+   `Image.opt172-clean` md5 `60a2f43c6fddaf415511ff307b17058b`（未覆写，只作留档）
+   / `Image.opt172.crc` md5 `567bbb3314cb35256cf712eba2db7b93`（已覆写，出片用它）。
+
+### 三、顺带查出三个坑（后来人必看）
+
+1. ★**漏跑 CRC 定点覆写会伪装成"ABI 被破坏"**★：症状与"CORE 改坏了 CRC"**完全一样**
+   （3 个符号 CRC 对不上、两个模块拒载、构建 rc=0 且无任何报错）。
+   **判据**：看 `vmlinux.symvers` 里 `iso_masks` / `task_is_scx` / `sk_filter_trim_cap` 是不是**厂商期望值**；
+   是自然值（`0x9998675b` / `0x61658a4e` / `0x43b2b8f0`）就是漏跑了覆写。
+2. ★`out-core` 是**脏构建目录**★：`Module.symvers`(10-15 15:35) 与 `vmlinux.symvers`(10-16 13:00)
+   对同一符号给出**不同值** ⇒ 混了 CORE=y / CORE=n 两批 `.o`。
+   **opt169/170/171 都建在它上面，产物不可信。**
    基线一律用 `gateNNN/vmlinux.symvers` 这类**按版快照**。
-2. **判据要用"上机版快照"而不是当前构建目录**：`gate168/vmlinux.symvers` 的版本串与构建时刻
+3. **判据要用"上机版快照"而不是当前构建目录**：`gate168/vmlinux.symvers` 的版本串与构建时刻
    （`v1.1-opt168`，20:06 vs 器件 `uname` 20:04:30）对得上，才能当现役基准。
 
 ### 四、可复用架构事实
