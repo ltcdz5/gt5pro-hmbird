@@ -1,5 +1,64 @@
 # 更新日志（Changes）
 
+## 2026-10-17 · ★★本方向暂缓（放弃原因：工程量大、难度高）★★
+
+### 一、声明
+
+**「内核态 hmbird 调度类 / 风驰游戏调度」方向自 2026-10-17 起暂缓。**
+放弃原因按机主口径写：**工程量大、难度高**。完整记录见
+→ **`docs/opt163-opt172-收尾结论与暂缓-20261017.md`**
+
+三条叠在一起：① 要让调度真变好，得同时复现**五段链**（内核 `sched_class` + 5 个厂商 `.ko` +
+3 个用户态服务 + 参数库 + 云控注入），少一段数据就是假的；② 核心症结（hmbird 在线时 cpu5/6/7
+连 `taskset` 都跑不动）本轮**没能定位到机制**，三个用户态开关全无效，而「内核里摘掉 sched_class」
+这条退路又被 ABI 堵死；③ 效应量 ≤1~2%，本机噪声带 I/O 20% / 功率 CV 41% ⇒ **改对了也测不出来**。
+
+### 二、本轮做完的事（都有实测）
+
+1. **把厂商"官方桥"修好**（此前是断的）：`game_pid` 恒 `-1`（内核**无任何自动路径**，只能用户态写）
+   ⇒ `cpu_load` 走早退分支恒 `90/60`、`critical_task_name` 节点不存在、`heavy_task_info` 全空。
+   按厂商 `service.sh` 恢复 `ctn_patch` + `opgs_daemon` 后**四项同时变活**
+   （`game_pid=27929`、`critical_task_name=[UnityMain UnityGfxDevice]`、`cpu_load` 真值、`heavy_task` 出现 `Thread-30`）。
+2. **官方给第五人格的规则实读**：`es4g.clist="4,7,2,3"`、`pipeline{4:__render__, 7:Thread-}`、
+   `fixed_critical_task=["n___render__","n_Thread-"]`、`dpcpus/sfcpus="0-1 5-6"`
+   ⇒ 与社区 LOVE 的 `com.netease.dwrg{Thread-*}=7` **逐字一致**。
+3. **真实对局客观判据**：链路全活下打真实对局（Scene 导 CSV）——
+   ★平均 FPS **46.53 不过**（阈值 55）★，JANK 0.332 / cpu5-6 20.7% / cpu7 7.0% / 长帧 0 四项过。
+   `f234` 实测 **1631 MHz**（正常 2939~2961），`scaling_max_freq` 被压约 **19%**。
+4. **前一篇 P0 判决未翻案**：三个开关（`partial_ctrl` / `isolate_ctrl` / `iso_free_rescue`）仍写不住或无效。
+5. ★**ABI 实测：`CONFIG_HMBIRD_SCHED_CORE=n` 禁用**★（本想用它把 hmbird `sched_class` 整个摘掉）：
+   相对上机版 `opt168`（导出 15490），CORE=n 后导出 15489，**3 个符号 CRC 改变 + 1 个符号消失**：
+
+   | 符号 | opt168 (CORE=y) | CORE=n |
+   |---|---|---|
+   | `iso_masks` | `0xcb6a4c44` | `0x9998675b` |
+   | `sk_filter_trim_cap` | `0xf5845708` | `0x43b2b8f0` |
+   | `task_is_scx` | `0xb3071c68` | `0x61658a4e` |
+   | `hmbird_transitioning` | `0x47330ca1` | ★消失★（定义 `kernel/sched/hmbird/hmbird.c:95-96`） |
+
+   ⇒ `gate_vko_crc.py`：opt168 **拒载 = 0**；CORE=n **拒载 = 2**（`bluetooth.ko`、`oplus_bsp_sched_ext.ko`），
+   报的是 `disagrees about version of symbol`。机制：全树只有 **2 个**头文件被 CORE 门控
+   （`include/linux/sched.h:2489-2578`、`kernel/sched/sched.h:3409-3411`）⇒ genksyms 可见类型集变化。
+
+### 三、顺带查出两个坑（后来人必看）
+
+1. ★`out-core` 是**脏构建目录**★：`Module.symvers`(10-15 15:35)=好值 `0xcb6a4c44`，
+   而 `vmlinux.symvers`(10-16 13:00)=坏值 `0x9998675b` —— 同目录两个 symvers 互相矛盾
+   ⇒ 混了 CORE=y / CORE=n 两批 `.o`。**opt169/170/171 都建在它上面，产物不可信。**
+   基线一律用 `gateNNN/vmlinux.symvers` 这类**按版快照**。
+2. **判据要用"上机版快照"而不是当前构建目录**：`gate168/vmlinux.symvers` 的版本串与构建时刻
+   （`v1.1-opt168`，20:06 vs 器件 `uname` 20:04:30）对得上，才能当现役基准。
+
+### 四、可复用架构事实
+
+- 厂商游戏调度是**五段链**：内核 sched_class + 5 个厂商 `.ko` + 3 个用户态服务 + 参数库 + 云控注入。
+- **放置权在内核**（hmbird `sched_class` 抢 `select_task_rq`），**决策权在用户态**。
+- `es4g` 真选核**必须 `governor=scx`**（5 个 `android_vh_scx_*` 钩子）。
+- 厂商 `.ko` 只依赖 10 个 hmbird 导出符号，且★只有 `oplus_bsp_sched_ext.ko` 一个模块要★；
+  `game_opt` / `sched_assist` / `sched_walt` **不需要**任何"只有 hmbird 提供"的符号。
+
+---
+
 ## 2026-10-14 · ★P0 判决：核心簇被 hmbird 排除出调度视野★（新增，请优先读这条）
 
 ### 一、结论先行
